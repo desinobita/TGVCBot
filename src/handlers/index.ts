@@ -7,20 +7,22 @@
  */
 
 import bot from '../bot';
-import start from './start';
-import jiosaavn from './jiosaavn';
-import youtube from './youtube';
-import play from './play';
 import controls from './controls';
-import queue from './queue';
 import help from './help';
+import jiosaavn from './jiosaavn';
+import leave from './leave';
+import play from './play';
+import queue from './queue';
+import radio from './radio';
+import start from './start';
 
 export const InitHandlers = (): void => {
   bot.use(start);
   bot.use(jiosaavn);
-  bot.use(youtube);
+  bot.use(radio);
   bot.use(play);
   bot.use(controls);
   bot.use(queue);
   bot.use(help);
+  bot.use(leave);
 };

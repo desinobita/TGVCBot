@@ -6,50 +6,63 @@
  * You may obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0
  */
 
-import { GramTGCalls } from 'gram-tgcalls';
+import { GramTGCalls, AudioOptions } from 'tgcalls-next';
 import { userbot } from './userbot';
 import bot from './bot';
 import env from './env';
 import { Chat } from './types/chat';
-import { Ytmp3 } from './types/ytmp3.response';
 import { queue, QueueData } from './queue';
 import { escape } from 'html-escaper';
 import { ffmpeg } from './ffmpeg';
-import {
-  sendPlayingMessage,
-  getDownloadLink,
-  sendFailedToStreamMessage
-} from './utils';
-import axios from 'axios';
+import { sendPlayingMessage, getDownloadLink } from './utils';
 
-const streamParams = {
-  bitsPerSample: 16,
-  sampleRate: 48000,
-  channelCount: 1
+const streamParams: AudioOptions = {
+  bps: 16,
+  bitrate: 48000,
+  channels: 1
 };
 
-class TGCalls {
+class TGVCCalls {
   private gramTgCalls: Map<number, GramTGCalls>;
 
   constructor() {
     this.gramTgCalls = new Map<number, GramTGCalls>();
   }
 
-  private init(chat: number) {
-    this.gramTgCalls.set(chat, new GramTGCalls(userbot, chat));
-    return this.gramTgCalls.get(chat) as GramTGCalls;
+  private init(chat: Chat) {
+    const _TGCALLS = new GramTGCalls(userbot, chat.id);
+    _TGCALLS.addListener('audio-finish', () => {
+      this.onStreamFinish(chat);
+    });
+    _TGCALLS.addListener('audio-error', (e) => {
+      this.onStreamError(e as Error, chat);
+    });
+    this.gramTgCalls.set(chat.id, _TGCALLS);
+    return this.gramTgCalls.get(chat.id) as GramTGCalls;
   }
 
-  private async onStreamFinish(chat: Chat, kill: () => any): Promise<void> {
+  private async onStreamFinish(chat: Chat): Promise<void> {
     let next = queue.get(chat.id);
     if (!next) {
       let call = this.gramTgCalls.get(chat.id);
       this.gramTgCalls.delete(chat.id);
       call?.stop();
-      await kill();
       return;
     }
-    await tgcalls.streamOrQueue(chat, next);
+    await this.streamOrQueue(chat, next);
+  }
+
+  private async onStreamError(error: Error, chat: Chat): Promise<void> {
+    console.error(error);
+    const errorMessage = error.message || String(error);
+
+    if (errorMessage.includes('No active call')) {
+      queue.clear(chat.id);
+      this.gramTgCalls.delete(chat.id);
+      return;
+    }
+
+    await this.onStreamFinish(chat);
   }
 
   has(chat: number) {
@@ -63,7 +76,7 @@ class TGCalls {
   connected(chat: number) {
     let tgcalls = this.gramTgCalls.get(chat);
     if (!tgcalls) return false;
-    if (!tgcalls.audioFinished) {
+    if (!tgcalls.finished) {
       return true;
     }
     return false;
@@ -72,13 +85,13 @@ class TGCalls {
   finished(chat: number) {
     let tgcalls = this.gramTgCalls.get(chat);
     if (!tgcalls) return false;
-    return !!tgcalls.audioFinished;
+    return !!tgcalls.finished;
   }
 
   pause(chat: number) {
     let tgcalls = this.gramTgCalls.get(chat);
     if (!tgcalls) return false;
-    if (!tgcalls.audioFinished && tgcalls.pauseAudio()) {
+    if (!tgcalls.finished && tgcalls.pause()) {
       return true;
     }
     return false;
@@ -87,7 +100,7 @@ class TGCalls {
   resume(chat: number) {
     let tgcalls = this.gramTgCalls.get(chat);
     if (!tgcalls) return false;
-    if (!tgcalls.audioFinished && tgcalls.resumeAudio()) {
+    if (!tgcalls.finished && tgcalls.resume()) {
       return true;
     }
     return false;
@@ -134,16 +147,13 @@ class TGCalls {
 
     let tgcalls = this.gramTgCalls.get(chat.id)
       ? (this.gramTgCalls.get(chat.id) as GramTGCalls)
-      : this.init(chat.id);
+      : this.init(chat);
 
     if (data.provider === 'jiosaavn') {
-      let [readable, killProcess] = await ffmpeg(data.mp3_link);
+      let [readable] = await ffmpeg(data.mp3_link);
       await tgcalls.stream({
-        readable: readable,
-        params: streamParams,
-        listeners: {
-          onFinish: () => this.onStreamFinish(chat, killProcess)
-        }
+        audio: readable,
+        audioOptions: streamParams
       });
       await sendPlayingMessage(chat, data);
     }
@@ -154,45 +164,23 @@ class TGCalls {
         ? data.image
         : await getDownloadLink(data.image);
 
-      let [readable, killProcess] = await ffmpeg(mp3_link);
+      let [readable] = await ffmpeg(mp3_link);
       await tgcalls.stream({
-        readable: readable,
-        params: streamParams,
-        listeners: {
-          onFinish: () => this.onStreamFinish(chat, killProcess)
-        }
+        audio: readable,
+        audioOptions: streamParams
       });
       await sendPlayingMessage(chat, { ...data, image: poster });
     }
 
-    if (data.provider === 'youtube') {
-      let response = (
-        await axios.get<Ytmp3>(
-          'https://apis.arnabxd.me/ytmp3?id=' + data.mp3_link
-        )
-      ).data;
-
-      let audio =
-        response.audio.filter((d) => d.itag === 251).length > 0
-          ? response.audio.filter((d) => d.itag === 251)[0]
-          : response.audio[0];
-      let [readable, kill] = await ffmpeg(audio.url);
-
+    if (data.provider === 'radio') {
+      let [readable] = await ffmpeg(data.mp3_link);
       await tgcalls.stream({
-        readable: readable,
-        params: streamParams,
-        listeners: {
-          onFinish: () => this.onStreamFinish(chat, kill),
-          onError: async (e) => {
-            console.log(1);
-            await sendFailedToStreamMessage(chat.id, e);
-            this.onStreamFinish(chat, kill);
-          }
-        }
+        audio: readable,
+        audioOptions: streamParams
       });
       await sendPlayingMessage(chat, data);
     }
   }
 }
 
-export const tgcalls = new TGCalls();
+export const tgcalls = new TGVCCalls();

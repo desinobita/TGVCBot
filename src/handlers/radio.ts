@@ -7,42 +7,41 @@
  */
 
 import { Composer } from 'grammy';
-import env from '../env';
+import { commandExtractor } from '../utils';
 import { tgcalls } from '../tgcalls';
-import { getMessageLink } from '../utils';
+import env from '../env';
 
 const composer = new Composer();
 
 export default composer;
 
-composer.command(['play', 'pl'], async (ctx) => {
+composer.command(['radio', 'stream'], async (ctx) => {
   await ctx.api.sendChatAction(ctx.chat.id, 'record_voice');
 
   if (ctx.chat.type === 'private')
     return await ctx.reply('This Command works on Group Only');
 
-  if (
-    !ctx.message?.reply_to_message ||
-    !('audio' in ctx.message!.reply_to_message)
-  )
-    return await ctx.reply('Please reply this command to a audio file');
+  let { args: keyword } = commandExtractor(ctx.message!.text);
+  if (!keyword) return await ctx.reply('Please provide a radio/stream link');
 
-  let { reply_to_message: message } = ctx.message;
+  if (!keyword.startsWith('http')) {
+    return await ctx.reply('Invalid');
+  }
 
   await tgcalls.streamOrQueue(
     { id: ctx.chat.id, name: ctx.chat.title },
     {
-      title: message.audio!.title!,
-      duration: message.audio!.duration.toString(),
-      image: message.audio!.thumb?.file_id ?? env.THUMBNAIL,
-      artist: message.audio!.performer ?? 'TGVCBot',
-      link: getMessageLink(ctx.chat.id, message.message_id),
-      mp3_link: message.audio!.file_id,
-      provider: 'telegram',
+      link: keyword,
+      title: 'Radio',
+      image: env.THUMBNAIL,
+      artist: '...',
+      duration: '500',
       requestedBy: {
-        first_name: ctx.from.first_name,
-        id: ctx.from.id
-      }
+        id: ctx.from!.id,
+        first_name: ctx.from!.first_name
+      },
+      mp3_link: keyword,
+      provider: 'radio'
     }
   );
 });
